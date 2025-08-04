@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  price_loader:
+    build: ./price_loader
+    ports:
+      - "8000:8000"
+    volumes:
+      - shared_data:/app/shared
+    depends_on:
+      - redis
+
+  calculator:
+    build: ./calculator
+    ports:
+      - "8001:8001"
+    volumes:
+      - shared_data:/app/shared
+    depends_on:
+      - redis
+
+  jump_graph:
+    build: ./jump_graph
+    ports:
+      - "8002:8002"
+    volumes:
+      - shared_data:/app/shared
+    depends_on:
+      - redis
+
+  ui:
+    build: ./ui
+    ports:
+      - "8501:8501"
+    depends_on:
+      - price_loader
+      - calculator
+      - jump_graph
+
+volumes:
+  redis_data:
+  shared_data:
