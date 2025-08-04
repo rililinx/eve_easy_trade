@@ -5,13 +5,18 @@ import urllib.request
 from pathlib import Path
 
 ESI_BASE = "https://esi.evetech.net/latest"
+USER_AGENT = (
+    "EveEasyTrade/0.1 (Scarlett Clocl; +https://github.com/your/repository; "
+    "rililinx@gmail.com)"
+)
 
 
 def get_json(url: str, params: dict | None = None):
     """Fetch JSON data from a URL with optional query parameters."""
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(url) as resp:  # nosec B310 - trusted source
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req) as resp:  # nosec B310 - trusted source
         return json.loads(resp.read().decode())
 
 
