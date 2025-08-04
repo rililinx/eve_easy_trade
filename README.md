@@ -1,6 +1,4 @@
-Here’s a structured **README.md**-style project plan for your EVE Online market analysis tool. This version is written as a clear and comprehensive implementation roadmap, organized by phases with detailed tasks.
 
----
 
 # 📦 EVE Online Market Arbitrage Tool
 
@@ -14,7 +12,6 @@ The architecture is built on microservices in Python and orchestrated using Dock
 
 * **Frontend (UI)**: Streamlit or React app for user interaction
 * **Microservices**:
-
   * **Price Loader**: Fetches market prices from ESI
   * **Calculator**: Identifies profitable trade opportunities
   * **Jump Graph Generator**: Calculates static jump distances between regions
