@@ -1,27 +1,27 @@
 [
   {
-    "id": 0,
-    "name": "#System",
-    "volume": 0.0
+    "id": 41,
+    "name": "Garbage",
+    "volume": 0.25
   },
   {
-    "id": 37687,
-    "name": "Eagle Wiyrkomi Serenity Only SKIN",
-    "volume": 0.01
+    "id": 2368,
+    "name": "Broken Organic Mortar Applicators",
+    "volume": 100.0
   },
   {
-    "id": 75374,
-    "name": "FW Complex Large NVY-1 Occupier Spawner ( DO NOT TRANSLATE )",
-    "volume": 0.0
+    "id": 2369,
+    "name": "Broken Sterile Conduits",
+    "volume": 100.0
   },
   {
-    "id": 37688,
-    "name": "Eagle Wiyrkomi Serenity Only SKIN (7 Days)",
-    "volume": 0.01
+    "id": 2371,
+    "name": "Broken Nano-Factory",
+    "volume": 100.0
   },
   {
-    "id": 75375,
-    "name": "FW Complex Scout NVY-5 Occupier Spawner ( DO NOT TRANSLATE )",
-    "volume": 0.0
+    "id": 2373,
+    "name": "Broken Self-Harmonizing Power Core",
+    "volume": 100.0
   }
 ]

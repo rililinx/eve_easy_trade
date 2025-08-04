@@ -21,31 +21,42 @@ def get_json(url: str, params: dict | None = None):
 
 
 def fetch_items(limit: int | None = None):
-    """Retrieve all item type ids then fetch details for each item.
+    """Retrieve marketable items from ESI market groups and fetch their details.
 
     Args:
         limit: Optional number of items to fetch for quick runs.
     """
-    items: list[dict] = []
-    page = 1
-    while True:
-        ids = get_json(f"{ESI_BASE}/universe/types/", {"page": page})
-        if not ids:
+    group_ids = get_json(f"{ESI_BASE}/markets/groups/")
+    print(f"Fetched {len(group_ids)} market groups")
+
+    type_ids: set[int] = set()
+    for group_id in group_ids:
+        group = get_json(f"{ESI_BASE}/markets/groups/{group_id}/")
+        name = group.get("name")
+        if isinstance(name, dict):
+            name = name.get("en-us")
+        types = group.get("types") or []
+        print(f"Fetched market group {group_id}: {name} ({len(types)} types)")
+        type_ids.update(types)
+        if limit and len(type_ids) >= limit:
             break
-        for type_id in ids:
-            info = get_json(f"{ESI_BASE}/universe/types/{type_id}/")
-            name = info.get("name")
-            if isinstance(name, dict):
-                name = name.get("en-us")
-            print(f"Fetched item {type_id}: {name}")
-            items.append({
-                "id": type_id,
-                "name": name,
-                "volume": info.get("packaged_volume") or info.get("volume"),
-            })
-            if limit and len(items) >= limit:
-                return items
-        page += 1
+
+    sorted_ids = sorted(type_ids)
+    if limit:
+        sorted_ids = sorted_ids[:limit]
+
+    items: list[dict] = []
+    for type_id in sorted_ids:
+        info = get_json(f"{ESI_BASE}/universe/types/{type_id}/")
+        name = info.get("name")
+        if isinstance(name, dict):
+            name = name.get("en-us")
+        print(f"Fetched item {type_id}: {name}")
+        items.append({
+            "id": type_id,
+            "name": name,
+            "volume": info.get("packaged_volume") or info.get("volume"),
+        })
     return items
 
 
