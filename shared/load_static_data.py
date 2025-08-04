@@ -10,34 +10,52 @@ USER_AGENT = (
     "rililinx@gmail.com)"
 )
 
+# Regions we care about for item indexing (major trade hubs)
+DEFAULT_REGION_IDS = [
+    10000002,  # The Forge (Jita)
+    10000030,  # Heimatar (Rens)
+    10000032,  # Sinq Laison (Dodixie)
+    10000042,  # Metropolis (Hek)
+    10000043,  # Domain (Amarr, Ashab)
+    10000051,  # Verge Vendor (Botane)
+]
 
-def get_json(url: str, params: dict | None = None):
+
+def get_json(url: str, params: dict | None = None, *, return_headers: bool = False):
     """Fetch JSON data from a URL with optional query parameters."""
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req) as resp:  # nosec B310 - trusted source
-        return json.loads(resp.read().decode())
+        data = json.loads(resp.read().decode())
+        if return_headers:
+            return data, resp.headers
+        return data
 
 
-def fetch_items(limit: int | None = None):
-    """Retrieve marketable items from ESI market groups and fetch their details.
-
-    Args:
-        limit: Optional number of items to fetch for quick runs.
-    """
-    group_ids = get_json(f"{ESI_BASE}/markets/groups/")
-    print(f"Fetched {len(group_ids)} market groups")
-
+def fetch_items(region_ids: list[int], limit: int | None = None):
+    """Retrieve items that have market orders in the specified regions."""
     type_ids: set[int] = set()
-    for group_id in group_ids:
-        group = get_json(f"{ESI_BASE}/markets/groups/{group_id}/")
-        name = group.get("name")
-        if isinstance(name, dict):
-            name = name.get("en-us")
-        types = group.get("types") or []
-        print(f"Fetched market group {group_id}: {name} ({len(types)} types)")
-        type_ids.update(types)
+    for region_id in region_ids:
+        region_info = get_json(f"{ESI_BASE}/universe/regions/{region_id}/")
+        region_name = region_info.get("name")
+        page = 1
+        while True:
+            data, headers = get_json(
+                f"{ESI_BASE}/markets/{region_id}/types/",
+                params={"page": page},
+                return_headers=True,
+            )
+            print(
+                f"Fetched {len(data)} types from region {region_id}: {region_name} (page {page})"
+            )
+            type_ids.update(data)
+            if limit and len(type_ids) >= limit:
+                break
+            page_count = int(headers.get("X-Pages", 1))
+            if page >= page_count:
+                break
+            page += 1
         if limit and len(type_ids) >= limit:
             break
 
@@ -52,11 +70,15 @@ def fetch_items(limit: int | None = None):
         if isinstance(name, dict):
             name = name.get("en-us")
         print(f"Fetched item {type_id}: {name}")
-        items.append({
-            "id": type_id,
-            "name": name,
-            "volume": info.get("packaged_volume") or info.get("volume"),
-        })
+        items.append(
+            {
+                "id": type_id,
+                "name": name,
+                "volume": info.get("packaged_volume") or info.get("volume"),
+            }
+        )
+        if limit and len(items) >= limit:
+            break
     return items
 
 
@@ -91,7 +113,7 @@ def main():
     args = parser.parse_args()
 
     limit = args.item_limit or None
-    items = fetch_items(limit=limit)
+    items = fetch_items(DEFAULT_REGION_IDS, limit=limit)
     regions = fetch_regions()
     out_dir = Path(__file__).parent / "static_data"
     save_data(items, regions, out_dir)

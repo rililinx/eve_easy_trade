@@ -41,7 +41,8 @@ The architecture is built on microservices in Python and orchestrated using Dock
 * [x] Set up Python project with Docker Compose
 * [x] Initialize Redis container for storage
 * [x] Create shared data service or volume for static files
-* [x] Load and store static item list from ESI (names, volumes, IDs)
+* [x] Load and store static item list from ESI (names, volumes, IDs) using
+  `markets/{region_id}/types` for default trade hub regions
 * [x] Load full region list from ESI for dropdown input in UI
 
 ---
