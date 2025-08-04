@@ -32,6 +32,7 @@ def fetch_items(limit: int | None = None):
             name = info.get("name")
             if isinstance(name, dict):
                 name = name.get("en-us")
+            print(f"Fetched item {type_id}: {name}")
             items.append({
                 "id": type_id,
                 "name": name,
@@ -49,16 +50,18 @@ def fetch_regions():
     regions: list[dict] = []
     for region_id in region_ids:
         info = get_json(f"{ESI_BASE}/universe/regions/{region_id}/")
-        regions.append({"id": region_id, "name": info.get("name")})
+        name = info.get("name")
+        print(f"Fetched region {region_id}: {name}")
+        regions.append({"id": region_id, "name": name})
     return regions
 
 
 def save_data(items, regions, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     with (out_dir / "items.json").open("w") as f:
-        json.dump(items, f)
+        json.dump(items, f, indent=2)
     with (out_dir / "regions.json").open("w") as f:
-        json.dump(regions, f)
+        json.dump(regions, f, indent=2)
 
 
 def main():
