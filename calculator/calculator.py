@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import itertools
+import logging
 import math
 import os
 import urllib.parse
@@ -73,20 +74,36 @@ redis_client = redis.Redis(
 )
 
 
+# Logging configuration
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
+logger = logging.getLogger(__name__)
+
+
 def fetch_best_orders(region_id: int, item_id: int) -> tuple[dict | None, dict | None]:
     """Return best sell and buy orders for ``item_id`` in ``region_id``."""
+
+    logger.debug("Fetching orders for region %s item %s", region_id, item_id)
 
     key = f"orders:{region_id}:{item_id}"
     data = redis_client.get(key)
     if not data:
+        logger.debug("No order data for %s", key)
         return None, None
     try:
         payload = json.loads(data)
     except json.JSONDecodeError:  # pragma: no cover - corrupt data
+        logger.debug("Invalid JSON in %s", key)
         return None, None
 
     sell_orders = payload.get("sell", [])
     buy_orders = payload.get("buy", [])
+    logger.debug(
+        "Fetched %d sell and %d buy orders for %s",
+        len(sell_orders),
+        len(buy_orders),
+        key,
+    )
     sell = sell_orders[0] if sell_orders else None
     buy = buy_orders[0] if buy_orders else None
     return sell, buy
@@ -107,6 +124,14 @@ def calculate_trades(
     descending by profit.
     """
 
+    logger.debug(
+        "calculate_trades wallet=%s cargo=%s min_profit=%s limit=%s",
+        wallet,
+        cargo,
+        min_profit,
+        limit,
+    )
+
     results: list[dict] = []
 
     for hub_a, hub_b in itertools.permutations(TRADE_HUBS, 2):
@@ -121,6 +146,8 @@ def calculate_trades(
         jumps = JUMP_GRAPH.get(name_a, {}).get(name_b)
         if jumps is None:
             continue
+
+        logger.debug("Evaluating %s -> %s (%s jumps)", name_a, name_b, jumps)
 
         for item_id, item in ITEMS.items():
             sell, _ = fetch_best_orders(region_a, item_id)
@@ -152,20 +179,20 @@ def calculate_trades(
 
             profit_per_jump = profit / jumps if jumps else profit
 
-            results.append(
-                {
-                    "item": item.get("name", str(item_id)),
-                    "buy_region": name_a,
-                    "sell_region": name_b,
-                    "quantity": available,
-                    "total_cost": total_cost,
-                    "total_volume": total_volume,
-                    "expected_revenue": revenue,
-                    "profit": profit,
-                    "jumps": jumps,
-                    "profit_per_jump": profit_per_jump,
-                }
-            )
+            result = {
+                "item": item.get("name", str(item_id)),
+                "buy_region": name_a,
+                "sell_region": name_b,
+                "quantity": available,
+                "total_cost": total_cost,
+                "total_volume": total_volume,
+                "expected_revenue": revenue,
+                "profit": profit,
+                "jumps": jumps,
+                "profit_per_jump": profit_per_jump,
+            }
+            results.append(result)
+            logger.debug("Found trade opportunity: %s", result)
 
     results.sort(key=lambda r: r["profit"], reverse=True)
     return results[:limit]
@@ -175,6 +202,8 @@ class Handler(BaseHTTPRequestHandler):
     """HTTP API returning trade opportunities as JSON."""
 
     def do_GET(self):  # noqa: N802 - required method name
+        logger.debug("HTTP GET %s", self.path)
+
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
 
@@ -190,6 +219,7 @@ class Handler(BaseHTTPRequestHandler):
         limit = get_int("limit", DEFAULT_LIMIT)
 
         data = calculate_trades(wallet, cargo, min_profit, limit)
+        logger.debug("Returning %d opportunities", len(data))
 
         body = json.dumps(data, indent=2).encode()
         self.send_response(200)
@@ -201,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def run() -> None:
     server = HTTPServer(("0.0.0.0", 8001), Handler)
-    print("Calculator service running on port 8001")
+    logger.info("Calculator service running on port 8001")
     server.serve_forever()
 
 
