@@ -39,18 +39,24 @@ if not shared_dir.exists():
 ITEMS_FILE = shared_dir / "static_data" / "items.json"
 REGIONS_FILE = shared_dir / "static_data" / "regions.json"
 
-# Load the item and region identifiers we care about
+# Load the item and region identifiers we care about along with their names
 try:
     with ITEMS_FILE.open() as f:
-        ITEMS: list[int] = [entry["id"] for entry in json.load(f)]
+        _items = json.load(f)
+        ITEMS: list[int] = [entry["id"] for entry in _items]
+        ITEM_NAMES: dict[int, str] = {entry["id"]: entry["name"] for entry in _items}
 except FileNotFoundError:
     ITEMS = []
+    ITEM_NAMES = {}
 
 try:
     with REGIONS_FILE.open() as f:
-        REGIONS: list[int] = [entry["id"] for entry in json.load(f)]
+        _regions = json.load(f)
+        REGIONS: list[int] = [entry["id"] for entry in _regions]
+        REGION_NAMES: dict[int, str] = {entry["id"]: entry["name"] for entry in _regions}
 except FileNotFoundError:
     REGIONS = []
+    REGION_NAMES = {}
 
 
 # Redis connection
@@ -109,15 +115,18 @@ def update_prices() -> None:
     """Fetch prices for all items/regions and store them in Redis."""
 
     for region_id in REGIONS:
+        region_name = REGION_NAMES.get(region_id, str(region_id))
         for type_id in ITEMS:
+            item_name = ITEM_NAMES.get(type_id, str(type_id))
             prices = fetch_best_prices(region_id, type_id)
             key = f"prices:{region_id}:{type_id}"
             try:
                 redis_client.setex(key, TTL_SECONDS, json.dumps(prices))
+                print(f"Loaded {item_name} prices for {region_name}")
             except Exception as exc:  # pragma: no cover - redis errors
                 print(
-                    f"Error storing prices for region {region_id} "
-                    f"item {type_id}: {exc}"
+                    f"Error storing prices for region {region_name} "
+                    f"item {item_name}: {exc}"
                 )
 
 
