@@ -10,6 +10,8 @@ services:
 
   price_loader:
     build: ./price_loader
+    environment:
+      - REDIS_HOST=redis
     ports:
       - "8000:8000"
     volumes:
@@ -19,6 +21,8 @@ services:
 
   calculator:
     build: ./calculator
+    environment:
+      - REDIS_HOST=redis
     ports:
       - "8001:8001"
     volumes:
@@ -28,6 +32,8 @@ services:
 
   jump_graph:
     build: ./jump_graph
+    environment:
+      - REDIS_HOST=redis
     ports:
       - "8002:8002"
     volumes:
