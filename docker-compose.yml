@@ -43,8 +43,12 @@ services:
 
   ui:
     build: ./ui
+    environment:
+      - REDIS_HOST=redis
     ports:
       - "8501:8501"
+    volumes:
+      - shared_data:/app/shared
     depends_on:
       - price_loader
       - calculator

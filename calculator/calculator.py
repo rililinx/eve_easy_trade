@@ -11,6 +11,8 @@ Each stored opportunity contains:
 
 * ``from`` – source trade hub name
 * ``to`` – destination trade hub name
+* ``from_location_id`` – station ID where the item is bought
+* ``to_location_id`` – station ID where the item is sold
 * ``item_id`` – type identifier
 * ``amount`` – number of units that can be traded
 * ``full_volume`` – total volume in m³
@@ -25,6 +27,7 @@ import itertools
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import redis
@@ -77,6 +80,10 @@ redis_client = redis.Redis(
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger(__name__)
+
+
+OPPORTUNITY_TTL = int(os.environ.get("OPPORTUNITY_TTL", 15 * 60))
+RECALCULATE_INTERVAL = int(os.environ.get("RECALCULATE_INTERVAL", 15 * 60))
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +163,8 @@ def calculate_item_opportunities(item_id: int, item: dict) -> list[dict]:
         opportunity = {
             "from": name_a,
             "to": name_b,
+            "from_location_id": sell.get("location_id"),
+            "to_location_id": buy.get("location_id"),
             "item_id": item_id,
             "amount": amount,
             "full_volume": full_volume,
@@ -181,14 +190,28 @@ def calculate_and_store_opportunities() -> dict[int, list[dict]]:
             continue
 
         key = f"opportunities:{item_id}"
-        redis_client.set(key, json.dumps(opportunities))
-        logger.debug("Stored %d opportunities in %s", len(opportunities), key)
+        redis_client.set(key, json.dumps(opportunities), ex=OPPORTUNITY_TTL)
+        logger.debug(
+            "Stored %d opportunities in %s (TTL %ds)",
+            len(opportunities),
+            key,
+            OPPORTUNITY_TTL,
+        )
         results[item_id] = opportunities
 
     logger.info("Stored opportunities for %d items", len(results))
     return results
 
 
-if __name__ == "__main__":  # pragma: no cover - manual execution
-    calculate_and_store_opportunities()
+def main() -> None:  # pragma: no cover - run loop in production
+    while True:
+        calculate_and_store_opportunities()
+        logger.info(
+            "Recalculation complete, sleeping for %d seconds", RECALCULATE_INTERVAL
+        )
+        time.sleep(RECALCULATE_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()
 
