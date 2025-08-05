@@ -10,17 +10,46 @@ from __future__ import annotations
 
 import json
 import os
-import requests
+from pathlib import Path
+
 import pandas as pd
 import redis
+import requests
 import streamlit as st
+
+
+# ---------------------------------------------------------------------------
+# Static data
+# ---------------------------------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parent
+shared_dir = BASE_DIR / "shared"
+if not shared_dir.exists():
+    shared_dir = BASE_DIR.parent / "shared"
+static_dir = shared_dir / "static_data"
+
+ITEMS_FILE = static_dir / "items.json"
+STATIONS_FILE = static_dir / "stations.json"
+
+try:
+    with ITEMS_FILE.open() as f:
+        _items = json.load(f)
+        ITEM_NAMES = {entry["id"]: entry["name"] for entry in _items}
+except FileNotFoundError:
+    ITEM_NAMES = {}
+
+try:
+    with STATIONS_FILE.open() as f:
+        STATION_NAMES = json.load(f)
+except FileNotFoundError:
+    STATION_NAMES = {}
 
 
 # ---------------------------------------------------------------------------
 # Redis helpers
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=15 * 60)
 def load_opportunities() -> list[dict]:
     """Fetch all stored opportunities from Redis."""
 
@@ -53,23 +82,33 @@ ESI_BASE = "https://esi.evetech.net/latest"
 USER_AGENT = "EveEasyTradeUI/0.1 (github.com/your/repository)"
 
 
-@st.cache_data(show_spinner=False)
 def get_station_name(station_id: int | None) -> str:
-    """Resolve a station ID to its name using ESI."""
+    """Resolve a station ID to its name using cached static data."""
 
     if not station_id:
         return "Unknown"
-    try:
+
+    sid = str(station_id)
+    name = STATION_NAMES.get(sid)
+    if name:
+        return name
+
+    try:  # Fetch once and persist for future lookups
         resp = requests.get(
             f"{ESI_BASE}/universe/stations/{int(station_id)}/",
             headers={"User-Agent": USER_AGENT},
             timeout=10,
         )
         resp.raise_for_status()
-        data = resp.json()
-        return data.get("name", str(station_id))
+        name = resp.json().get("name", sid)
     except Exception:
-        return str(station_id)
+        name = sid
+
+    STATION_NAMES[sid] = name
+    STATIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with STATIONS_FILE.open("w") as f:
+        json.dump(STATION_NAMES, f, indent=2)
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +134,7 @@ for opp in raw_rows:
     jumps = profit / profit_per_jump if profit_per_jump else 0
     rows.append(
         {
-            "Item name": opp.get("item_name"),
+            "Item name": ITEM_NAMES.get(opp.get("item_id"), str(opp.get("item_id"))),
             "From": get_station_name(opp.get("from_location_id")),
             "To": get_station_name(opp.get("to_location_id")),
             "Volume": opp.get("full_volume"),
