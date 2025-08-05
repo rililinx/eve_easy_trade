@@ -62,13 +62,13 @@ redis_client = redis.Redis(
 
 
 def get_json(url: str, params: dict | None = None):
-    """Fetch JSON data from ``url`` with optional query parameters."""
+    """Fetch JSON data from ``url`` and return it along with headers."""
 
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req) as resp:  # nosec B310 - trusted source
-        return json.loads(resp.read().decode())
+        return json.loads(resp.read().decode()), resp.headers
 
 
 def fetch_best_prices(region_id: int, type_id: int) -> dict:
@@ -76,17 +76,31 @@ def fetch_best_prices(region_id: int, type_id: int) -> dict:
 
     result: dict[str, list[dict]] = {}
     for order_type in ("buy", "sell"):
-        try:
-            orders = get_json(
-                f"{ESI_BASE}/markets/{region_id}/orders/",
-                params={"order_type": order_type, "type_id": type_id},
-            )
-        except Exception as exc:  # pragma: no cover - network errors
-            print(
-                f"Error fetching orders for region {region_id} "
-                f"item {type_id} ({order_type}): {exc}"
-            )
-            orders = []
+        orders: list[dict] = []
+        page = 1
+        while True:
+            try:
+                data, headers = get_json(
+                    f"{ESI_BASE}/markets/{region_id}/orders/",
+                    params={
+                        "order_type": order_type,
+                        "type_id": type_id,
+                        "page": page,
+                    },
+                )
+            except Exception as exc:  # pragma: no cover - network errors
+                print(
+                    f"Error fetching orders for region {region_id} "
+                    f"item {type_id} ({order_type} page {page}): {exc}"
+                )
+                break
+
+            orders.extend(data)
+
+            page_count = int(headers.get("X-Pages", 1))
+            if page >= page_count:
+                break
+            page += 1
 
         if order_type == "buy":
             orders.sort(key=lambda o: o["price"], reverse=True)
