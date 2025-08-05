@@ -1,0 +1,58 @@
+{
+  "Amarr": {
+    "Ashab": 1,
+    "Botane": 14,
+    "Dodixie": 14,
+    "Hek": 15,
+    "Jita": 11,
+    "Rens": 11
+  },
+  "Ashab": {
+    "Amarr": 1,
+    "Botane": 14,
+    "Dodixie": 15,
+    "Hek": 16,
+    "Jita": 10,
+    "Rens": 12
+  },
+  "Botane": {
+    "Amarr": 14,
+    "Ashab": 14,
+    "Dodixie": 1,
+    "Hek": 9,
+    "Jita": 11,
+    "Rens": 10
+  },
+  "Dodixie": {
+    "Amarr": 14,
+    "Ashab": 15,
+    "Botane": 1,
+    "Hek": 8,
+    "Jita": 12,
+    "Rens": 10
+  },
+  "Hek": {
+    "Amarr": 15,
+    "Ashab": 16,
+    "Botane": 9,
+    "Dodixie": 8,
+    "Jita": 9,
+    "Rens": 6
+  },
+  "Jita": {
+    "Amarr": 11,
+    "Ashab": 10,
+    "Botane": 11,
+    "Dodixie": 12,
+    "Hek": 9,
+    "Rens": 15
+  },
+  "Rens": {
+    "Amarr": 11,
+    "Ashab": 12,
+    "Botane": 10,
+    "Dodixie": 10,
+    "Hek": 6,
+    "Jita": 15
+  }
+}
