@@ -1,9 +1,9 @@
 """Price Loader microservice.
 
-This service periodically queries the EVE Online ESI API for market
-orders and stores the best buy/sell prices in Redis.  Data is cached for
-one hour and refreshed every 15 minutes.  A manual refresh can also be
-triggered via an HTTP endpoint.
+This service periodically queries the EVE Online ESI API for all market
+orders in configured regions.  Orders for each region are cached as a
+JSON blob in Redis for one hour and refreshed every 15 minutes.  A
+manual refresh can also be triggered via an HTTP endpoint.
 """
 
 from __future__ import annotations
@@ -36,18 +36,7 @@ shared_dir = BASE_DIR / "shared"
 if not shared_dir.exists():
     shared_dir = BASE_DIR.parent / "shared"
 
-ITEMS_FILE = shared_dir / "static_data" / "items.json"
 REGIONS_FILE = shared_dir / "static_data" / "regions.json"
-
-# Load the item and region identifiers we care about along with their names
-try:
-    with ITEMS_FILE.open() as f:
-        _items = json.load(f)
-        ITEMS: list[int] = [entry["id"] for entry in _items]
-        ITEM_NAMES: dict[int, str] = {entry["id"]: entry["name"] for entry in _items}
-except FileNotFoundError:
-    ITEMS = []
-    ITEM_NAMES = {}
 
 try:
     with REGIONS_FILE.open() as f:
@@ -68,66 +57,53 @@ redis_client = redis.Redis(
 
 
 def get_json(url: str, params: dict | None = None):
-    """Fetch JSON data from ``url`` and return it."""
+    """Fetch JSON data from ``url`` and return it along with headers."""
 
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req) as resp:  # nosec B310 - trusted source
-        return json.loads(resp.read().decode())
+        data = json.loads(resp.read().decode())
+        headers = resp.headers
+    return data, headers
 
 
-def fetch_best_prices(region_id: int, type_id: int) -> dict:
-    """Retrieve the best five buy and sell orders for a given item."""
+def fetch_region_orders(region_id: int) -> list[dict]:
+    """Retrieve all market orders for ``region_id`` handling pagination."""
 
-    try:
-        data = get_json(
-            f"{ESI_BASE}/markets/{region_id}/orders/",
-            params={"type_id": type_id},
-        )
-    except Exception as exc:  # pragma: no cover - network errors
-        print(
-            f"Error fetching orders for region {region_id} "
-            f"item {type_id}: {exc}"
-        )
-        return {"buy": [], "sell": []}
+    orders: list[dict] = []
+    page = 1
+    while True:
+        try:
+            data, headers = get_json(
+                f"{ESI_BASE}/markets/{region_id}/orders/",
+                params={"page": page},
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            print(f"Error fetching page {page} for region {region_id}: {exc}")
+            break
 
-    buy_orders = [o for o in data if o.get("is_buy_order")]
-    sell_orders = [o for o in data if not o.get("is_buy_order")]
+        orders.extend(data)
+        page_count = int(headers.get("X-Pages", 1))
+        if page >= page_count:
+            break
+        page += 1
 
-    buy_orders.sort(key=lambda o: o["price"], reverse=True)
-    sell_orders.sort(key=lambda o: o["price"])
-
-    def simplify(order: dict) -> dict:
-        return {
-            "price": order["price"],
-            "volume_remain": order["volume_remain"],
-            "location_id": order["location_id"],
-        }
-
-    return {
-        "buy": [simplify(o) for o in buy_orders[:5]],
-        "sell": [simplify(o) for o in sell_orders[:5]],
-    }
+    return orders
 
 
-def update_prices() -> None:
-    """Fetch prices for all items/regions and store them in Redis."""
+def update_orders() -> None:
+    """Fetch market orders for all regions and store them in Redis."""
 
     for region_id in REGIONS:
         region_name = REGION_NAMES.get(region_id, str(region_id))
-        for type_id in ITEMS:
-            item_name = ITEM_NAMES.get(type_id, str(type_id))
-            prices = fetch_best_prices(region_id, type_id)
-            key = f"prices:{region_id}:{type_id}"
-            try:
-                redis_client.setex(key, TTL_SECONDS, json.dumps(prices))
-                print(f"Loaded {item_name} prices for {region_name}")
-            except Exception as exc:  # pragma: no cover - redis errors
-                print(
-                    f"Error storing prices for region {region_name} "
-                    f"item {item_name}: {exc}"
-                )
+        orders = fetch_region_orders(region_id)
+        key = f"orders:{region_id}"
+        try:
+            redis_client.setex(key, TTL_SECONDS, json.dumps(orders))
+            print(f"Loaded {len(orders)} orders for {region_name}")
+        except Exception as exc:  # pragma: no cover - redis errors
+            print(f"Error storing orders for region {region_name}: {exc}")
 
 
 def schedule_updates() -> None:
@@ -135,8 +111,8 @@ def schedule_updates() -> None:
 
     def loop():
         while True:
-            print("Updating prices...")
-            update_prices()
+            print("Updating orders...")
+            update_orders()
             time.sleep(UPDATE_INTERVAL)
 
     thread = threading.Thread(target=loop, daemon=True)
@@ -148,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802 - required method name
         if self.path == "/refresh":
-            threading.Thread(target=update_prices, daemon=True).start()
+            threading.Thread(target=update_orders, daemon=True).start()
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"Refresh started")
