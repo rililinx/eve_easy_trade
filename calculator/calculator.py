@@ -11,7 +11,10 @@ Each stored opportunity contains:
 
 * ``from`` – source trade hub name
 * ``to`` – destination trade hub name
+* ``from_location_id`` – station ID where the item is bought
+* ``to_location_id`` – station ID where the item is sold
 * ``item_id`` – type identifier
+* ``item_name`` – item name for convenience
 * ``amount`` – number of units that can be traded
 * ``full_volume`` – total volume in m³
 * ``full_price`` – total sale price at the destination
@@ -161,7 +164,10 @@ def calculate_item_opportunities(item_id: int, item: dict) -> list[dict]:
         opportunity = {
             "from": name_a,
             "to": name_b,
+            "from_location_id": sell.get("location_id"),
+            "to_location_id": buy.get("location_id"),
             "item_id": item_id,
+            "item_name": item.get("name"),
             "amount": amount,
             "full_volume": full_volume,
             "full_price": full_price,

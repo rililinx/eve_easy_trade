@@ -10,32 +10,10 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
-
+import requests
 import pandas as pd
 import redis
 import streamlit as st
-
-
-# ---------------------------------------------------------------------------
-# Static data
-# ---------------------------------------------------------------------------
-
-BASE_DIR = Path(__file__).resolve().parent
-SHARED_DIR = BASE_DIR.parent / "shared"
-ITEMS_FILE = SHARED_DIR / "static_data" / "items.json"
-
-
-@st.cache_data
-def load_item_names() -> dict[int, str]:
-    """Return a mapping of item ID to name."""
-
-    try:
-        with ITEMS_FILE.open() as f:
-            items = json.load(f)
-    except FileNotFoundError:
-        return {}
-    return {entry["id"]: entry["name"] for entry in items}
 
 
 # ---------------------------------------------------------------------------
@@ -52,13 +30,8 @@ def load_opportunities() -> list[dict]:
         decode_responses=True,
     )
 
-    item_names = load_item_names()
     rows: list[dict] = []
     for key in client.keys("opportunities:*"):
-        try:
-            item_id = int(key.split(":", 1)[1])
-        except (IndexError, ValueError):
-            continue
         data = client.get(key)
         if not data:
             continue
@@ -67,12 +40,36 @@ def load_opportunities() -> list[dict]:
         except json.JSONDecodeError:
             continue
 
-        item_name = item_names.get(item_id, str(item_id))
-        for opp in opportunities:
-            opp["item_name"] = item_name
-            rows.append(opp)
+        rows.extend(opportunities)
 
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Station name lookup
+# ---------------------------------------------------------------------------
+
+ESI_BASE = "https://esi.evetech.net/latest"
+USER_AGENT = "EveEasyTradeUI/0.1 (github.com/your/repository)"
+
+
+@st.cache_data(show_spinner=False)
+def get_station_name(station_id: int | None) -> str:
+    """Resolve a station ID to its name using ESI."""
+
+    if not station_id:
+        return "Unknown"
+    try:
+        resp = requests.get(
+            f"{ESI_BASE}/universe/stations/{int(station_id)}/",
+            headers={"User-Agent": USER_AGENT},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("name", str(station_id))
+    except Exception:
+        return str(station_id)
 
 
 # ---------------------------------------------------------------------------
@@ -98,9 +95,9 @@ for opp in raw_rows:
     jumps = profit / profit_per_jump if profit_per_jump else 0
     rows.append(
         {
-            "Item": opp.get("item_name"),
-            "From": opp.get("from"),
-            "To": opp.get("to"),
+            "Item name": opp.get("item_name"),
+            "From": get_station_name(opp.get("from_location_id")),
+            "To": get_station_name(opp.get("to_location_id")),
             "Volume": opp.get("full_volume"),
             "Quantity": opp.get("amount"),
             "Price": opp.get("full_price"),
