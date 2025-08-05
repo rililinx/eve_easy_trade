@@ -61,19 +61,14 @@ redis_client = redis.Redis(
 )
 
 
-def get_json(
-    url: str, params: dict | None = None, *, return_headers: bool = False
-):
+def get_json(url: str, params: dict | None = None):
     """Fetch JSON data from ``url`` with optional query parameters."""
 
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req) as resp:  # nosec B310 - trusted source
-        data = json.loads(resp.read().decode())
-        if return_headers:
-            return data, resp.headers
-        return data
+        return json.loads(resp.read().decode())
 
 
 def fetch_best_prices(region_id: int, type_id: int) -> dict:
@@ -81,31 +76,17 @@ def fetch_best_prices(region_id: int, type_id: int) -> dict:
 
     result: dict[str, list[dict]] = {}
     for order_type in ("buy", "sell"):
-        page = 1
-        orders: list[dict] = []
-        while True:
-            try:
-                data, headers = get_json(
-                    f"{ESI_BASE}/markets/{region_id}/orders/",
-                    params={
-                        "order_type": order_type,
-                        "type_id": type_id,
-                        "page": page,
-                    },
-                    return_headers=True,
-                )
-            except Exception as exc:  # pragma: no cover - network errors
-                print(
-                    f"Error fetching orders for region {region_id} "
-                    f"item {type_id} ({order_type}): {exc}"
-                )
-                break
-
-            orders.extend(data)
-            page_count = int(headers.get("X-Pages", 1))
-            if page >= page_count:
-                break
-            page += 1
+        try:
+            orders = get_json(
+                f"{ESI_BASE}/markets/{region_id}/orders/",
+                params={"order_type": order_type, "type_id": type_id},
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            print(
+                f"Error fetching orders for region {region_id} "
+                f"item {type_id} ({order_type}): {exc}"
+            )
+            orders = []
 
         if order_type == "buy":
             orders.sort(key=lambda o: o["price"], reverse=True)
