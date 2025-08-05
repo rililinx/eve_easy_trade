@@ -1,9 +1,10 @@
 """Price Loader microservice.
 
-This service periodically queries the EVE Online ESI API for all market
-orders in configured regions.  Orders for each region are cached as a
-JSON blob in Redis for one hour and refreshed every 15 minutes.  A
-manual refresh can also be triggered via an HTTP endpoint.
+This service queries the EVE Online ESI API for the best buy and sell
+orders for each configured item in the major trade hub regions.  The
+top five buy and sell orders for every ``(region, item)`` pair are
+cached in Redis as JSON with a one hour TTL.  Data is refreshed every
+15 minutes and a manual refresh can be triggered via an HTTP endpoint.
 """
 
 from __future__ import annotations
@@ -11,10 +12,10 @@ from __future__ import annotations
 import json
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -39,6 +40,7 @@ if not shared_dir.exists():
 
 REGIONS_FILE = shared_dir / "static_data" / "regions.json"
 TRADE_HUBS_FILE = shared_dir / "static_data" / "trade_hubs.json"
+ITEMS_FILE = shared_dir / "static_data" / "items.json"
 
 try:
     with REGIONS_FILE.open() as f:
@@ -54,6 +56,15 @@ try:
 except FileNotFoundError:
     REGIONS = []
 
+try:
+    with ITEMS_FILE.open() as f:
+        _items = json.load(f)
+        ITEM_IDS: list[int] = [entry["id"] for entry in _items]
+        ITEM_NAMES: dict[int, str] = {entry["id"]: entry["name"] for entry in _items}
+except FileNotFoundError:
+    ITEM_IDS = []
+    ITEM_NAMES = {}
+
 
 # Redis connection
 redis_client = redis.Redis(
@@ -64,58 +75,56 @@ redis_client = redis.Redis(
 
 
 def get_json(url: str, params: dict | None = None):
-    """Fetch JSON data from ``url`` and return it along with headers."""
+    """Fetch JSON data from ``url``."""
 
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req) as resp:  # nosec B310 - trusted source
         data = json.loads(resp.read().decode())
-        headers = resp.headers
-    return data, headers
+    return data
 
 
-def fetch_region_orders(region_id: int) -> list[dict]:
-    """Retrieve all market orders for ``region_id`` handling pagination."""
+def fetch_best_orders(region_id: int, type_id: int, order_type: str) -> list[dict]:
+    """Return top five ``order_type`` orders for ``type_id`` in ``region_id``."""
 
-    orders: list[dict] = []
-    page = 1
     region_name = REGION_NAMES.get(region_id, str(region_id))
-    while True:
-        try:
-            data, headers = get_json(
-                f"{ESI_BASE}/markets/{region_id}/orders/",
-                params={"page": page},
-            )
-        except Exception as exc:  # pragma: no cover - network errors
-            print(f"Error fetching page {page} region {region_name}: {exc}")
-            break
+    item_name = ITEM_NAMES.get(type_id, str(type_id))
+    try:
+        data = get_json(
+            f"{ESI_BASE}/markets/{region_id}/orders/",
+            params={"type_id": type_id, "order_type": order_type},
+        )
+    except Exception as exc:  # pragma: no cover - network errors
+        print(f"Error fetching {order_type} {item_name} in {region_name}: {exc}")
+        return []
 
-        print(f"page {page} region {region_name}")
-        orders.extend(data)
-        page_count = int(headers.get("X-Pages", 1))
-        if page >= page_count:
-            break
-        page += 1
-
-    return orders
+    reverse = order_type == "buy"
+    data.sort(key=lambda o: o["price"], reverse=reverse)
+    return data[:5]
 
 
 def update_orders() -> None:
-    """Fetch market orders for all regions and store them in Redis."""
+    """Fetch best buy/sell orders for all items and regions and store them."""
 
-    def fetch_and_store(region_id: int) -> None:
+    def process_region(region_id: int) -> None:
         region_name = REGION_NAMES.get(region_id, str(region_id))
-        orders = fetch_region_orders(region_id)
-        key = f"orders:{region_id}"
-        try:
-            redis_client.setex(key, TTL_SECONDS, json.dumps(orders))
-            print(f"Loaded {len(orders)} orders for {region_name}")
-        except Exception as exc:  # pragma: no cover - redis errors
-            print(f"Error storing orders for region {region_name}: {exc}")
+        for item_id in ITEM_IDS:
+            item_name = ITEM_NAMES.get(item_id, str(item_id))
+            buy = fetch_best_orders(region_id, item_id, "buy")
+            sell = fetch_best_orders(region_id, item_id, "sell")
+            key = f"orders:{region_id}:{item_id}"
+            value = {"buy": buy, "sell": sell}
+            try:
+                redis_client.setex(key, TTL_SECONDS, json.dumps(value))
+                print(
+                    f"Cached {item_name} in {region_name}: {len(buy)} buy / {len(sell)} sell"
+                )
+            except Exception as exc:  # pragma: no cover - redis errors
+                print(f"Error storing {item_name} in {region_name}: {exc}")
 
     with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(fetch_and_store, region_id) for region_id in REGIONS]
+        futures = [executor.submit(process_region, region_id) for region_id in REGIONS]
         for future in futures:
             future.result()
 
