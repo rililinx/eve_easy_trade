@@ -62,62 +62,47 @@ redis_client = redis.Redis(
 
 
 def get_json(url: str, params: dict | None = None):
-    """Fetch JSON data from ``url`` and return it along with headers."""
+    """Fetch JSON data from ``url`` and return it."""
 
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req) as resp:  # nosec B310 - trusted source
-        return json.loads(resp.read().decode()), resp.headers
+        return json.loads(resp.read().decode())
 
 
 def fetch_best_prices(region_id: int, type_id: int) -> dict:
     """Retrieve the best five buy and sell orders for a given item."""
 
-    result: dict[str, list[dict]] = {}
-    for order_type in ("buy", "sell"):
-        orders: list[dict] = []
-        page = 1
-        while True:
-            try:
-                data, headers = get_json(
-                    f"{ESI_BASE}/markets/{region_id}/orders/",
-                    params={
-                        "order_type": order_type,
-                        "type_id": type_id,
-                        "page": page,
-                    },
-                )
-            except Exception as exc:  # pragma: no cover - network errors
-                print(
-                    f"Error fetching orders for region {region_id} "
-                    f"item {type_id} ({order_type} page {page}): {exc}"
-                )
-                break
+    try:
+        data = get_json(
+            f"{ESI_BASE}/markets/{region_id}/orders/",
+            params={"type_id": type_id},
+        )
+    except Exception as exc:  # pragma: no cover - network errors
+        print(
+            f"Error fetching orders for region {region_id} "
+            f"item {type_id}: {exc}"
+        )
+        return {"buy": [], "sell": []}
 
-            orders.extend(data)
+    buy_orders = [o for o in data if o.get("is_buy_order")]
+    sell_orders = [o for o in data if not o.get("is_buy_order")]
 
-            page_count = int(headers.get("X-Pages", 1))
-            if page >= page_count:
-                break
-            page += 1
+    buy_orders.sort(key=lambda o: o["price"], reverse=True)
+    sell_orders.sort(key=lambda o: o["price"])
 
-        if order_type == "buy":
-            orders.sort(key=lambda o: o["price"], reverse=True)
-        else:
-            orders.sort(key=lambda o: o["price"])
+    def simplify(order: dict) -> dict:
+        return {
+            "price": order["price"],
+            "volume_remain": order["volume_remain"],
+            "location_id": order["location_id"],
+        }
 
-        simplified = [
-            {
-                "price": o["price"],
-                "volume_remain": o["volume_remain"],
-                "location_id": o["location_id"],
-            }
-            for o in orders[:5]
-        ]
-        result[order_type] = simplified
-
-    return result
+    return {
+        "buy": [simplify(o) for o in buy_orders[:5]],
+        "sell": [simplify(o) for o in sell_orders[:5]],
+    }
 
 
 def update_prices() -> None:
