@@ -1,40 +1,38 @@
-"""Trade opportunity calculator microservice.
+"""Trade opportunity calculator.
 
-This service reads market order data from Redis along with static
+This module reads market order data from Redis along with static
 information about trade hubs, jump distances and item volumes.  It
-calculates potential buy/sell opportunities between all trade hub
-pairs and exposes the top results via a simple HTTP API.
+calculates potential buy/sell opportunities for **all** item and trade
+hub pairs and stores the results back into Redis for later filtering by
+other services.
 
-Query parameters:
+Each stored opportunity contains:
 
-``wallet``:        maximum ISK to spend (default: 50_000_000)
-``cargo``:         available cargo volume in m^3 (default: 230)
-``min_profit``:    minimum profit in ISK to include (default: 1_000_000)
-``limit``:         maximum number of results to return (default: 10)
+* ``from`` – source trade hub name
+* ``to`` – destination trade hub name
+* ``item_id`` – type identifier
+* ``amount`` – number of units that can be traded
+* ``full_volume`` – total volume in m³
+* ``full_price`` – total sale price at the destination
+* ``profit`` – potential profit in ISK
+* ``profit_per_jump`` – profit divided by jump distance between hubs
 """
 
 from __future__ import annotations
 
-import json
 import itertools
+import json
 import logging
-import math
 import os
-import urllib.parse
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import redis
 
 
-# Default filters
-DEFAULT_WALLET = 50_000_000
-DEFAULT_CARGO = 230.0
-DEFAULT_PROFIT = 1_000_000
-DEFAULT_LIMIT = 10
+# ---------------------------------------------------------------------------
+# Static data setup
+# ---------------------------------------------------------------------------
 
-
-# Resolve paths to shared static data directory
 BASE_DIR = Path(__file__).resolve().parent
 shared_dir = BASE_DIR / "shared"
 if not shared_dir.exists():
@@ -45,51 +43,55 @@ HUBS_FILE = shared_dir / "static_data" / "trade_hubs.json"
 JUMPS_FILE = shared_dir / "static_data" / "jump_graph.json"
 
 
-# Load static data
-try:
+try:  # pragma: no cover - files may be missing during development
     with ITEMS_FILE.open() as f:
         _items = json.load(f)
         ITEMS: dict[int, dict] = {entry["id"]: entry for entry in _items}
-except FileNotFoundError:  # pragma: no cover - file missing only during dev
+except FileNotFoundError:  # pragma: no cover - missing static data
     ITEMS = {}
 
-try:
+try:  # pragma: no cover - files may be missing during development
     with HUBS_FILE.open() as f:
         TRADE_HUBS = json.load(f)
-except FileNotFoundError:  # pragma: no cover - file missing only during dev
+except FileNotFoundError:  # pragma: no cover - missing static data
     TRADE_HUBS = []
 
-try:
+try:  # pragma: no cover - files may be missing during development
     with JUMPS_FILE.open() as f:
         JUMP_GRAPH = json.load(f)
-except FileNotFoundError:  # pragma: no cover - file missing only during dev
+except FileNotFoundError:  # pragma: no cover - missing static data
     JUMP_GRAPH = {}
 
 
-# Redis connection
+# ---------------------------------------------------------------------------
+# Redis and logging configuration
+# ---------------------------------------------------------------------------
+
 redis_client = redis.Redis(
     host=os.environ.get("REDIS_HOST", "localhost"),
     port=int(os.environ.get("REDIS_PORT", 6379)),
     decode_responses=True,
 )
 
-
-# Logging configuration
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger(__name__)
 
 
-def fetch_best_orders(region_id: int, item_id: int) -> tuple[dict | None, dict | None]:
-    """Return best sell and buy orders for ``item_id`` in ``region_id``."""
+# ---------------------------------------------------------------------------
+# Order fetching
+# ---------------------------------------------------------------------------
 
-    logger.debug("Fetching orders for region %s item %s", region_id, item_id)
+def fetch_best_orders(region_id: int, item_id: int) -> tuple[dict | None, dict | None]:
+    """Return the best sell and buy orders for ``item_id`` in ``region_id``."""
 
     key = f"orders:{region_id}:{item_id}"
+    logger.debug("Fetching %s", key)
     data = redis_client.get(key)
     if not data:
         logger.debug("No order data for %s", key)
         return None, None
+
     try:
         payload = json.loads(data)
     except json.JSONDecodeError:  # pragma: no cover - corrupt data
@@ -109,47 +111,31 @@ def fetch_best_orders(region_id: int, item_id: int) -> tuple[dict | None, dict |
     return sell, buy
 
 
-def calculate_trades(
-    wallet: int = DEFAULT_WALLET,
-    cargo: float = DEFAULT_CARGO,
-    min_profit: int = DEFAULT_PROFIT,
-    limit: int = DEFAULT_LIMIT,
-) -> list[dict]:
-    """Compute potential trade opportunities.
+# ---------------------------------------------------------------------------
+# Opportunity calculation
+# ---------------------------------------------------------------------------
 
-    Iterates over all ordered pairs of trade hubs and items.  For each
-    pair it determines the maximum quantity that can be purchased given
-    wallet, cargo space and order volumes, then calculates the expected
-    profit.  Results are filtered by ``min_profit`` and sorted
-    descending by profit.
-    """
+def calculate_opportunities() -> dict[int, list[dict]]:
+    """Calculate trade opportunities for all items and hub pairs."""
 
-    logger.debug(
-        "calculate_trades wallet=%s cargo=%s min_profit=%s limit=%s",
-        wallet,
-        cargo,
-        min_profit,
-        limit,
-    )
+    results: dict[int, list[dict]] = {}
 
-    results: list[dict] = []
+    for item_id, item in ITEMS.items():
+        opportunities: list[dict] = []
+        volume_per_unit = item.get("volume") or 0
 
-    for hub_a, hub_b in itertools.permutations(TRADE_HUBS, 2):
-        region_a = hub_a["region_id"]
-        region_b = hub_b["region_id"]
-        # Skip trading within the same region as prices are identical
-        if region_a == region_b:
-            continue
+        for hub_a, hub_b in itertools.permutations(TRADE_HUBS, 2):
+            region_a = hub_a["region_id"]
+            region_b = hub_b["region_id"]
+            if region_a == region_b:
+                continue
 
-        name_a = hub_a["name"]
-        name_b = hub_b["name"]
-        jumps = JUMP_GRAPH.get(name_a, {}).get(name_b)
-        if jumps is None:
-            continue
+            name_a = hub_a["name"]
+            name_b = hub_b["name"]
+            jumps = JUMP_GRAPH.get(name_a, {}).get(name_b)
+            if jumps is None:
+                continue
 
-        logger.debug("Evaluating %s -> %s (%s jumps)", name_a, name_b, jumps)
-
-        for item_id, item in ITEMS.items():
             sell, _ = fetch_best_orders(region_a, item_id)
             _, buy = fetch_best_orders(region_b, item_id)
             if not sell or not buy:
@@ -160,81 +146,54 @@ def calculate_trades(
             if sell_price <= buy_price:
                 continue
 
-            volume_per_unit = item.get("volume") or 0
-            available = min(
-                sell.get("volume_remain", 0),
-                buy.get("volume_remain", 0),
-                math.floor(wallet / buy_price),
-                math.floor(cargo / volume_per_unit) if volume_per_unit else 0,
-            )
-            if available <= 0:
+            amount = min(sell.get("volume_remain", 0), buy.get("volume_remain", 0))
+            if amount <= 0:
                 continue
 
-            total_cost = buy_price * available
-            total_volume = volume_per_unit * available
-            revenue = sell_price * available
-            profit = revenue - total_cost
-            if profit < min_profit:
-                continue
-
+            full_volume = volume_per_unit * amount
+            full_price = sell_price * amount
+            profit = (sell_price - buy_price) * amount
             profit_per_jump = profit / jumps if jumps else profit
 
-            result = {
-                "item": item.get("name", str(item_id)),
-                "buy_region": name_a,
-                "sell_region": name_b,
-                "quantity": available,
-                "total_cost": total_cost,
-                "total_volume": total_volume,
-                "expected_revenue": revenue,
+            opportunity = {
+                "from": name_a,
+                "to": name_b,
+                "item_id": item_id,
+                "amount": amount,
+                "full_volume": full_volume,
+                "full_price": full_price,
                 "profit": profit,
-                "jumps": jumps,
                 "profit_per_jump": profit_per_jump,
             }
-            results.append(result)
-            logger.debug("Found trade opportunity: %s", result)
+            opportunities.append(opportunity)
+            logger.debug("Opportunity found: %s", opportunity)
 
-    results.sort(key=lambda r: r["profit"], reverse=True)
-    return results[:limit]
+        if opportunities:
+            results[item_id] = opportunities
+            logger.debug("Calculated %d opportunities for item %s", len(opportunities), item_id)
 
-
-class Handler(BaseHTTPRequestHandler):
-    """HTTP API returning trade opportunities as JSON."""
-
-    def do_GET(self):  # noqa: N802 - required method name
-        logger.debug("HTTP GET %s", self.path)
-
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-
-        def get_int(name: str, default: int) -> int:
-            try:
-                return int(params.get(name, [default])[0])
-            except ValueError:
-                return default
-
-        wallet = get_int("wallet", DEFAULT_WALLET)
-        cargo = float(params.get("cargo", [DEFAULT_CARGO])[0])
-        min_profit = get_int("min_profit", DEFAULT_PROFIT)
-        limit = get_int("limit", DEFAULT_LIMIT)
-
-        data = calculate_trades(wallet, cargo, min_profit, limit)
-        logger.debug("Returning %d opportunities", len(data))
-
-        body = json.dumps(data, indent=2).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    return results
 
 
-def run() -> None:
-    server = HTTPServer(("0.0.0.0", 8001), Handler)
-    logger.info("Calculator service running on port 8001")
-    server.serve_forever()
+def store_opportunities(data: dict[int, list[dict]]) -> None:
+    """Store calculated opportunities in Redis keyed by item id."""
+
+    for item_id, opportunities in data.items():
+        key = f"opportunities:{item_id}"
+        redis_client.set(key, json.dumps(opportunities))
+        logger.debug("Stored %d opportunities in %s", len(opportunities), key)
 
 
-if __name__ == "__main__":
-    run()
+def calculate_and_store_opportunities() -> dict[int, list[dict]]:
+    """Convenience wrapper that calculates and stores opportunities."""
+
+    logger.info("Calculating trade opportunities...")
+    data = calculate_opportunities()
+    store_opportunities(data)
+    logger.info("Stored opportunities for %d items", len(data))
+    return data
+
+
+if __name__ == "__main__":  # pragma: no cover - manual execution
+    calculate_and_store_opportunities()
 
