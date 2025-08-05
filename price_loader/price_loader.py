@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import urllib.parse
 import urllib.request
@@ -37,15 +38,21 @@ if not shared_dir.exists():
     shared_dir = BASE_DIR.parent / "shared"
 
 REGIONS_FILE = shared_dir / "static_data" / "regions.json"
+TRADE_HUBS_FILE = shared_dir / "static_data" / "trade_hubs.json"
 
 try:
     with REGIONS_FILE.open() as f:
         _regions = json.load(f)
-        REGIONS: list[int] = [entry["id"] for entry in _regions]
         REGION_NAMES: dict[int, str] = {entry["id"]: entry["name"] for entry in _regions}
 except FileNotFoundError:
-    REGIONS = []
     REGION_NAMES = {}
+
+try:
+    with TRADE_HUBS_FILE.open() as f:
+        _hubs = json.load(f)
+        REGIONS: list[int] = sorted({entry["region_id"] for entry in _hubs})
+except FileNotFoundError:
+    REGIONS = []
 
 
 # Redis connection
@@ -73,6 +80,7 @@ def fetch_region_orders(region_id: int) -> list[dict]:
 
     orders: list[dict] = []
     page = 1
+    region_name = REGION_NAMES.get(region_id, str(region_id))
     while True:
         try:
             data, headers = get_json(
@@ -80,9 +88,10 @@ def fetch_region_orders(region_id: int) -> list[dict]:
                 params={"page": page},
             )
         except Exception as exc:  # pragma: no cover - network errors
-            print(f"Error fetching page {page} for region {region_id}: {exc}")
+            print(f"Error fetching page {page} region {region_name}: {exc}")
             break
 
+        print(f"page {page} region {region_name}")
         orders.extend(data)
         page_count = int(headers.get("X-Pages", 1))
         if page >= page_count:
@@ -95,7 +104,7 @@ def fetch_region_orders(region_id: int) -> list[dict]:
 def update_orders() -> None:
     """Fetch market orders for all regions and store them in Redis."""
 
-    for region_id in REGIONS:
+    def fetch_and_store(region_id: int) -> None:
         region_name = REGION_NAMES.get(region_id, str(region_id))
         orders = fetch_region_orders(region_id)
         key = f"orders:{region_id}"
@@ -104,6 +113,11 @@ def update_orders() -> None:
             print(f"Loaded {len(orders)} orders for {region_name}")
         except Exception as exc:  # pragma: no cover - redis errors
             print(f"Error storing orders for region {region_name}: {exc}")
+
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(fetch_and_store, region_id) for region_id in REGIONS]
+        for future in futures:
+            future.result()
 
 
 def schedule_updates() -> None:
