@@ -3,8 +3,9 @@
 This module reads market order data from Redis along with static
 information about trade hubs, jump distances and item volumes.  It
 calculates potential buy/sell opportunities for **all** item and trade
-hub pairs and stores the results back into Redis for later filtering by
-other services.
+hub pairs and stores the results back into Redis.  Opportunities are
+persisted immediately after each item is processed so that other
+services can start consuming data before the full calculation completes.
 
 Each stored opportunity contains:
 
@@ -115,83 +116,77 @@ def fetch_best_orders(region_id: int, item_id: int) -> tuple[dict | None, dict |
 # Opportunity calculation
 # ---------------------------------------------------------------------------
 
-def calculate_opportunities() -> dict[int, list[dict]]:
-    """Calculate trade opportunities for all items and hub pairs."""
+def calculate_item_opportunities(item_id: int, item: dict) -> list[dict]:
+    """Calculate trade opportunities for a single item across hub pairs."""
 
-    results: dict[int, list[dict]] = {}
+    opportunities: list[dict] = []
+    volume_per_unit = item.get("volume") or 0
 
-    for item_id, item in ITEMS.items():
-        opportunities: list[dict] = []
-        volume_per_unit = item.get("volume") or 0
+    for hub_a, hub_b in itertools.permutations(TRADE_HUBS, 2):
+        region_a = hub_a["region_id"]
+        region_b = hub_b["region_id"]
+        if region_a == region_b:
+            continue
 
-        for hub_a, hub_b in itertools.permutations(TRADE_HUBS, 2):
-            region_a = hub_a["region_id"]
-            region_b = hub_b["region_id"]
-            if region_a == region_b:
-                continue
+        name_a = hub_a["name"]
+        name_b = hub_b["name"]
+        jumps = JUMP_GRAPH.get(name_a, {}).get(name_b)
+        if jumps is None:
+            continue
 
-            name_a = hub_a["name"]
-            name_b = hub_b["name"]
-            jumps = JUMP_GRAPH.get(name_a, {}).get(name_b)
-            if jumps is None:
-                continue
+        sell, _ = fetch_best_orders(region_a, item_id)
+        _, buy = fetch_best_orders(region_b, item_id)
+        if not sell or not buy:
+            continue
 
-            sell, _ = fetch_best_orders(region_a, item_id)
-            _, buy = fetch_best_orders(region_b, item_id)
-            if not sell or not buy:
-                continue
+        buy_price = sell["price"]
+        sell_price = buy["price"]
+        if sell_price <= buy_price:
+            continue
 
-            buy_price = sell["price"]
-            sell_price = buy["price"]
-            if sell_price <= buy_price:
-                continue
+        amount = min(sell.get("volume_remain", 0), buy.get("volume_remain", 0))
+        if amount <= 0:
+            continue
 
-            amount = min(sell.get("volume_remain", 0), buy.get("volume_remain", 0))
-            if amount <= 0:
-                continue
+        full_volume = volume_per_unit * amount
+        full_price = sell_price * amount
+        profit = (sell_price - buy_price) * amount
+        profit_per_jump = profit / jumps if jumps else profit
 
-            full_volume = volume_per_unit * amount
-            full_price = sell_price * amount
-            profit = (sell_price - buy_price) * amount
-            profit_per_jump = profit / jumps if jumps else profit
+        opportunity = {
+            "from": name_a,
+            "to": name_b,
+            "item_id": item_id,
+            "amount": amount,
+            "full_volume": full_volume,
+            "full_price": full_price,
+            "profit": profit,
+            "profit_per_jump": profit_per_jump,
+        }
+        opportunities.append(opportunity)
+        logger.debug("Opportunity found: %s", opportunity)
 
-            opportunity = {
-                "from": name_a,
-                "to": name_b,
-                "item_id": item_id,
-                "amount": amount,
-                "full_volume": full_volume,
-                "full_price": full_price,
-                "profit": profit,
-                "profit_per_jump": profit_per_jump,
-            }
-            opportunities.append(opportunity)
-            logger.debug("Opportunity found: %s", opportunity)
-
-        if opportunities:
-            results[item_id] = opportunities
-            logger.debug("Calculated %d opportunities for item %s", len(opportunities), item_id)
-
-    return results
-
-
-def store_opportunities(data: dict[int, list[dict]]) -> None:
-    """Store calculated opportunities in Redis keyed by item id."""
-
-    for item_id, opportunities in data.items():
-        key = f"opportunities:{item_id}"
-        redis_client.set(key, json.dumps(opportunities))
-        logger.debug("Stored %d opportunities in %s", len(opportunities), key)
+    return opportunities
 
 
 def calculate_and_store_opportunities() -> dict[int, list[dict]]:
-    """Convenience wrapper that calculates and stores opportunities."""
+    """Calculate opportunities for all items and store each item immediately."""
 
     logger.info("Calculating trade opportunities...")
-    data = calculate_opportunities()
-    store_opportunities(data)
-    logger.info("Stored opportunities for %d items", len(data))
-    return data
+    results: dict[int, list[dict]] = {}
+
+    for item_id, item in ITEMS.items():
+        opportunities = calculate_item_opportunities(item_id, item)
+        if not opportunities:
+            continue
+
+        key = f"opportunities:{item_id}"
+        redis_client.set(key, json.dumps(opportunities))
+        logger.debug("Stored %d opportunities in %s", len(opportunities), key)
+        results[item_id] = opportunities
+
+    logger.info("Stored opportunities for %d items", len(results))
+    return results
 
 
 if __name__ == "__main__":  # pragma: no cover - manual execution
