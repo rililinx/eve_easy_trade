@@ -51,10 +51,10 @@ The architecture is built on microservices in Python and orchestrated using Dock
 
 **Tasks:**
 
-* [ ] Use ESI to fetch shortest route (jump count) between trade hubs
-* [ ] Precompute all jump combinations between selected regions
-* [ ] Store results in Redis or JSON file
-* [ ] This data is static and only needs to be calculated once
+* [x] Use ESI to fetch shortest route (jump count) between trade hubs
+* [x] Precompute all jump combinations between selected regions
+* [x] Store results in Redis or JSON file
+* [x] This data is static and only needs to be calculated once
 
 ---
 
